@@ -31,7 +31,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // ትክክለኛ የ Supabase ፕሮጀክት መረጃዎች
+        // የካ ማዕከላዊ ሰርቨር ትስስር (Supabase Cloud Config)
         const SUPABASE_URL = 'https://rhdumobjxnevytnbdbfq.supabase.co';
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoZHVtb2JqeG5ldnl0bmJkYmZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg0NDkzMDksImV4cCI6MjA2NDAyNTMwOX0.fF5V7V68oO-S-g-Z0L76n8S6i3uM347hG8s0a7YqQ8s';
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -60,6 +60,29 @@
                 if (!error && data) setComplaints(data);
             };
 
+            const handleLogin = (code, role) => {
+                if (code === keys[role]) setView(role);
+                else alert("የተሳሳተ ኮድ!");
+            };
+
+            const startScan = () => {
+                setUi({...ui, scanning: true});
+                setTimeout(() => {
+                    const scanner = new Html5Qrcode("reader");
+                    scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, 
+                    () => { scanner.stop(); setUi({...ui, scanning: false}); setView('citizen'); }, 
+                    () => {}).catch(() => alert("ካሜራ መክፈት አልተቻለም"));
+                }, 300);
+            };
+
+            const handleFileScan = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                new Html5Qrcode("hidden-reader").scanFile(file, true)
+                    .then(() => setView('citizen'))
+                    .catch(() => alert("QR ኮድ አልተገኘም!"));
+            };
+
             const submitForm = async (e) => {
                 e.preventDefault();
                 const data = Object.fromEntries(new FormData(e.target).entries());
@@ -70,17 +93,19 @@
                     type: data.type,
                     priority: data.priority,
                     status: 'New', 
+                    satisfaction: null, 
                     time: new Date().toLocaleString() 
                 };
 
                 const { error } = await supabaseClient.from('complaints').insert([report]);
                 if (error) {
-                    alert("የሰርቨር ስህተት አጋጥሟል! እባክዎ በ Supabase Policies ውስጥ INSERT ፈቃድ መኖሩን ያረጋግጡ።");
+                    alert("የሰርቨር ስህተት አጋጥሟል! እባክዎ በ Supabase Dashboard ውስጥ ወደ Authentication -> Policies በመሄድ INSERT እና SELECT ፈቃድ ለሁሉም መኖሩን ያረጋግጡ።");
                 } else {
                     audioRef.current.play();
                     alert("ቅሬታዎ በማዕከላዊ ሰርቨር ላይ ተመዝግቧል!");
                     fetchComplaints();
                     setView('landing');
+                    setUi({ scanning: false, hasPhoto: false, hasGps: false });
                 }
             };
 
@@ -91,6 +116,38 @@
                 }
             };
 
+            const submitSatisfaction = async (id, rate) => {
+                const { error } = await supabaseClient.from('complaints').update({ satisfaction: rate }).eq('id', id);
+                if (!error) {
+                    setComplaints(complaints.map(i => i.id === id ? {...i, satisfaction: rate} : i));
+                    setFoundReports(foundReports.map(i => i.id === id ? {...i, satisfaction: rate} : i));
+                }
+            };
+
+            const deleteComplaint = async (id) => {
+                const { error } = await supabaseClient.from('complaints').delete().eq('id', id);
+                if (!error) setComplaints(complaints.filter(i => i.id !== id));
+            };
+
+            const downloadExcel = () => {
+                const ws = XLSX.utils.json_to_sheet(complaints);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Yeka_Cloud_Data");
+                const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+                const data = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = window.URL.createObjectURL(data);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = "Yeka_Central_Report.xlsx";
+                link.click();
+            };
+
+            const updatePasscode = (role, newCode) => {
+                if(newCode.length < 4) return alert("ኮዱ ቢያንስ 4 ቁጥር መሆን አለበት!");
+                setKeys({...keys, [role]: newCode});
+                alert(`${role} ኮድ ተቀይሯል!`);
+            };
+
             return (
                 <div className="min-h-screen max-w-md mx-auto flex flex-col relative border-x border-pink-900/30 shadow-2xl">
                     <header className="p-4 glass-pink m-2 flex justify-between items-center sticky top-0 z-50">
@@ -98,45 +155,195 @@
                             <i className="fas fa-cloud pink-neon text-2xl animate-pulse"></i>
                             <h1 className="text-sm font-black pink-neon uppercase tracking-tighter">የካ ፅዳት - ክላውድ</h1>
                         </div>
+                        <button onClick={() => { fetchComplaints(); setView('tracker'); }} className="text-[10px] font-black bg-white/10 px-3 py-2 rounded-lg border border-pink-500 uppercase shadow-lg">ክትትል</button>
                     </header>
 
                     <main className="flex-1 p-4 overflow-y-auto pb-20">
-                        {view === 'landing' && (
+                        <div id="hidden-reader" className="hidden"></div>
+
+                        {view === 'landing' && !ui.scanning && (
                             <div className="space-y-6 pt-6 animate-in fade-in duration-500">
-                                <button onClick={() => setView('citizen')} className="btn-pink w-full py-4 uppercase">አዲስ ቅሬታ ላክ</button>
-                                <button onClick={() => setView('admin')} className="bg-white/10 w-full py-4 text-white uppercase rounded-xl">አስተዳዳሪ</button>
+                                <div className="text-center">
+                                    <div className="w-24 h-24 bg-[#ff007f] rounded-[35px] mx-auto flex items-center justify-center shadow-[0_0_35px_#ff007f] mb-4">
+                                        <i className="fas fa-server text-4xl text-black"></i>
+                                    </div>
+                                    <h2 className="text-3xl font-black italic">የየካ ፅዳት አስተዳደር</h2>
+                                    <p className="text-[10px] text-gray-500 uppercase font-bold tracking-[3px]">Centralized Cloud Database</p>
+                                </div>
+
+                                <div className="glass-pink p-6 text-center transform transition active:scale-95 shadow-lg border-b-4 border-b-[#ff007f]">
+                                    <p className="text-[10px] font-black uppercase opacity-60 mb-4 tracking-[4px]">QR SCAN</p>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <button onClick={startScan} className="btn-pink py-4 text-[10px] uppercase flex flex-col items-center gap-1 shadow-lg">
+                                            <i className="fas fa-camera text-lg"></i> ካሜራ
+                                        </button>
+                                        <label className="bg-white/5 border border-pink-500/30 rounded-xl flex flex-col items-center justify-center py-4 cursor-pointer hover:bg-pink-500/10 transition">
+                                            <i className="fas fa-image text-lg text-[#ff007f]"></i>
+                                            <span className="text-[10px] font-black uppercase mt-1">ጋላሪ</span>
+                                            <input type="file" accept="image/*" className="hidden" onChange={handleFileScan} />
+                                        </label>
+                                    </div>
+                                </div>
+
+                                {['citizen', 'admin', 'creator'].map(role => (
+                                    <div key={role} className="glass-pink p-4 flex flex-col gap-2 transform transition hover:scale-[1.02]">
+                                        <p className="text-[9px] font-black uppercase opacity-40 tracking-widest">{role === 'citizen' ? 'ቅሬታ አቅራቢ' : role} ACCESS</p>
+                                        <div className="flex gap-2">
+                                            <input type="password" placeholder="Passcode" className="input-pink text-xs font-black" onKeyDown={(e) => e.key === 'Enter' && handleLogin(e.target.value, role)} />
+                                            <button onClick={(e) => handleLogin(e.target.previousSibling.value, role)} className="btn-pink px-5 py-2 text-[10px] uppercase">GO</button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {ui.scanning && (
+                            <div className="glass-pink p-6 animate-pulse mt-10">
+                                <h2 className="text-center font-black pink-neon mb-4 uppercase text-sm">QR ኮዱን ስካን እያደረገ ነው...</h2>
+                                <div id="reader"></div>
+                                <button onClick={() => setUi({...ui, scanning: false})} className="w-full mt-6 py-4 text-xs font-black uppercase border-2 border-pink-500/50 rounded-xl">አቁም</button>
+                            </div>
+                        )}
+
+                        {view === 'tracker' && (
+                            <div className="space-y-4 animate-in slide-in-from-right duration-300">
+                                <div className="glass-pink p-6 space-y-4">
+                                    <h2 className="text-xl font-black pink-neon italic uppercase">የቅሬታ ክትትል</h2>
+                                    <p className="text-[10px] opacity-60">በማዕከላዊ ሰርቨር ላይ የእርስዎን ሪፖርት ለመፈለግ ስልክ ቁጥር ያስገቡ፦</p>
+                                    <input type="tel" placeholder="09..." className="input-pink font-black" onChange={(e) => setSearchPhone(e.target.value)} />
+                                    <button onClick={() => setFoundReports(complaints.filter(c => c.phone === searchPhone))} className="btn-pink w-full py-4 uppercase">በክላውድ ፈልግ</button>
+                                </div>
+                                {foundReports.map(c => (
+                                    <div key={c.id} className="glass-pink p-5 border-l-4 border-l-pink-500 space-y-4">
+                                        <div className="flex justify-between font-black text-sm uppercase">
+                                            <span>{c.name} ({c.wereda})</span>
+                                            <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${c.status === 'Resolved' ? 'bg-green-600' : c.status === 'In Progress' ? 'bg-yellow-600' : 'bg-blue-600'}`}>{c.status}</span>
+                                        </div>
+                                        <div className="text-[11px] opacity-70">ቀን፦ {c.time}</div>
+                                        {c.status === 'Resolved' && !c.satisfaction && (
+                                            <div className="bg-white/5 p-4 rounded-xl space-y-3">
+                                                <p className="text-[10px] font-black text-pink-300 uppercase">እባክዎ እርካታዎን በሰርቨሩ ላይ ያረጋግጡ፦</p>
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    {['በጣም ከፍተኛ', 'ከፍተኛ', 'መካከለኛ', 'ዝቅተኛ'].map(rate => (
+                                                        <button key={rate} onClick={() => submitSatisfaction(c.id, rate)} className="text-[9px] border border-pink-500 p-2 rounded-lg font-bold hover:bg-pink-500 transition">{rate}</button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        {c.satisfaction && <div className="text-[10px] font-black text-green-400 uppercase italic text-center mt-2">እርካታ፦ {c.satisfaction} ✅</div>}
+                                    </div>
+                                ))}
+                                <button onClick={() => setView('landing')} className="w-full py-4 text-xs font-black opacity-30 uppercase">ወደ ኋላ ተመለስ</button>
                             </div>
                         )}
 
                         {view === 'citizen' && (
-                            <form onSubmit={submitForm} className="glass-pink p-8 space-y-5">
-                                <h2 className="text-2xl font-black pink-neon uppercase italic">አዲስ ቅሬታ</h2>
+                            <form onSubmit={submitForm} className="glass-pink p-8 space-y-5 animate-in slide-in-from-bottom duration-500">
+                                <h2 className="text-2xl font-black pink-neon uppercase italic tracking-tighter">አዲስ ቅሬታ ላክ (Cloud)</h2>
                                 <input name="name" placeholder="ሙሉ ስም" required className="input-pink" />
                                 <input name="phone" placeholder="ስልክ ቁጥር" required className="input-pink" />
-                                <select name="wereda" className="input-pink" required>
-                                    <option value="">ወረዳ ይምረጡ</option>
-                                    {weredas.map(w => <option key={w}>{w}</option>)}
+                                <select name="wereda" className="input-pink text-sm" required>
+                                    <option value="" disabled selected>ወረዳ ይምረጡ</option>
+                                    {weredas.map(w => <option key={w} value={w}>{w}</option>)}
                                 </select>
-                                <select name="type" className="input-pink"><option>የቤት ቆሻሻ</option><option>የንግድ ቆሻሻ</option></select>
-                                <select name="priority" className="input-pink"><option>አስቸኳይ</option><option>መደበኛ</option></select>
-                                <button type="submit" className="btn-pink w-full py-5 font-black uppercase">ላክ</button>
-                                <button type="button" onClick={() => setView('landing')} className="w-full text-xs opacity-30 uppercase">ተመለስ</button>
+                                <select name="type" className="input-pink text-sm-none"><option>የቤት ቆሻሻ</option><option>የንግድ ቆሻሻ</option><option>የጎዳና ቆሻሻ</option></select>
+                                <div className="flex gap-3">
+                                    <label className={`flex-1 p-5 rounded-2xl border-2 flex flex-col items-center gap-2 transition ${ui.hasPhoto ? 'bg-green-600 border-none' : 'border-pink-500/30'}`}>
+                                        <i className="fas fa-camera text-xl"></i><span className="text-[9px] font-black uppercase tracking-tighter">ፎቶ አንሳ</span>
+                                        <input type="file" className="hidden" onChange={() => setUi({...ui, hasPhoto: true})} />
+                                    </label>
+                                    <div onClick={() => setUi({...ui, hasGps: true})} className={`flex-1 p-5 rounded-2xl border-2 flex flex-col items-center gap-2 transition ${ui.hasGps ? 'bg-green-600 border-none' : 'border-blue-500/50'}`}>
+                                        <i className="fas fa-map-marker-alt text-xl"></i><span className="text-[9px] font-black uppercase tracking-tighter">GPS ይለይ</span>
+                                    </div>
+                                </div>
+                                <select name="priority" className="input-pink font-black text-[#ff007f] text-sm"><option value="በጣም አስቸኳይ">🚨 በጣም አስቸኳይ</option><option value="አስቸኳይ">⚠️ አስቸኳይ</option><option value="መደበኛ">✅ መደበኛ</option></select>
+                                <button type="submit" className="btn-pink w-full py-5 text-xl font-black uppercase shadow-2xl">ሪፖርት ወደ ሰርቨር ላክ</button>
+                                <button type="button" onClick={() => setView('landing')} className="w-full text-xs font-black opacity-30 uppercase mt-2">ተመለስ</button>
                             </form>
                         )}
 
-                        {view === 'admin' && (
-                            <div className="space-y-4">
-                                <h2 className="text-xl font-bold">የቅሬታዎች ዝርዝር</h2>
-                                {complaints.map(c => (
-                                    <div key={c.id} className="glass-pink p-4 text-xs">
-                                        <p>{c.name} - {c.wereda}</p>
-                                        <button onClick={() => updateStatus(c.id, 'Resolved')} className="bg-green-600 px-2 py-1 mt-2 rounded">ተፈቷል</button>
+                        {(view === 'admin' || view === 'creator') && (
+                            <div className="space-y-6 animate-in fade-in">
+                                <div className="flex justify-between items-center glass-pink p-5 gap-3">
+                                    <h2 className="text-[10px] font-black pink-neon uppercase tracking-widest">{view} Dashboard</h2>
+                                    <button onClick={downloadExcel} className="bg-green-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase shadow-lg hover:bg-green-500"><i className="fas fa-file-excel mr-1"></i> Excel አውርድ</button>
+                                </div>
+
+                                <div className="glass-pink p-6">
+                                    <h3 className="text-[10px] font-black uppercase opacity-60 mb-6 text-center tracking-[4px]">ማዕከላዊ የሪፖርቶች ግራፍ</h3>
+                                    <div className="flex items-end justify-around h-40 border-b-2 border-pink-500/20 pb-2 mb-6 px-4">
+                                        {[
+                                            {label: 'አዲስ', key: 'New', color: '#007fff'},
+                                            {label: 'በሂደት', key: 'In Progress', color: '#ffbf00'},
+                                            {label: 'ተፈቷል', key: 'Resolved', color: '#00cc00'}
+                                        ].map(s => {
+                                            const count = complaints.filter(c => c.status === s.key).length;
+                                            const h = complaints.length ? (count / complaints.length) * 100 : 0;
+                                            return (
+                                                <div key={s.key} className="flex flex-col items-center gap-2 w-full">
+                                                    <div className="text-[11px] font-black mb-1" style={{color: s.color}}>{count}</div>
+                                                    <div className="bar-v" style={{
+                                                        height: `${Math.max(h, 5)}%`, 
+                                                        background: s.color, 
+                                                        boxShadow: `0 0 15px ${s.color}66`
+                                                    }}></div>
+                                                    <span className="text-[8px] font-black uppercase tracking-tighter mt-1 opacity-80">{s.label}</span>
+                                                </div>
+                                            );
+                                        })}
                                     </div>
-                                ))}
-                                <button onClick={() => setView('landing')} className="w-full text-xs opacity-30 uppercase">ተመለስ</button>
+                                </div>
+
+                                <div className="glass-pink overflow-hidden">
+                                    <div className="p-4 bg-[#ff007f] text-black font-black text-xs uppercase tracking-widest">ማዕከላዊ የቅሬታዎች ዝርዝር ({complaints.length})</div>
+                                    <div className="max-h-[300px] overflow-y-auto">
+                                        {complaints.map(c => (
+                                            <div key={c.id} className="p-4 border-b border-pink-900/20 space-y-3 transform transition hover:bg-white/5">
+                                                <div className="flex justify-between font-black text-xs uppercase tracking-tighter">
+                                                    <span>{c.name} - {c.wereda} ({c.phone})</span>
+                                                    <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${c.status === 'New' ? 'bg-blue-600' : c.status === 'In Progress' ? 'bg-yellow-600' : 'bg-green-600'}`}>{c.status}</span>
+                                                </div>
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-[9px] opacity-40 uppercase">{c.time}</span>
+                                                    <div className="flex gap-1">
+                                                        <button onClick={() => updateStatus(c.id, 'In Progress')} className="bg-white/10 px-3 py-1.5 rounded text-[8px] font-black uppercase">በሂደት</button>
+                                                        <button onClick={() => updateStatus(c.id, 'Resolved')} className="bg-green-600/30 text-green-400 px-3 py-1.5 rounded text-[8px] font-black uppercase">ተፈታ</button>
+                                                        {view === 'creator' && <button onClick={() => deleteComplaint(c.id)} className="text-red-500 ml-2 p-1.5"><i className="fas fa-trash-alt"></i></button>}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {view === 'creator' && (
+                                    <div className="glass-pink p-6 space-y-6">
+                                        <h3 className="pink-neon font-black text-xs uppercase text-center border-b border-pink-500/20 pb-3 tracking-widest">Update Passcodes</h3>
+                                        <div className="space-y-4">
+                                            {['citizen', 'admin', 'creator'].map(role => (
+                                                <div key={role} className="flex gap-2 items-center bg-black/40 p-2 rounded-xl">
+                                                    <span className="text-[9px] font-black uppercase w-16 opacity-60">{role}</span>
+                                                    <input type="text" placeholder="New Code" className="bg-transparent border-b border-pink-500 text-xs p-1 outline-none flex-1" id={`new-${role}`} />
+                                                    <button onClick={() => updatePasscode(role, document.getElementById(`new-${role}`).value)} className="btn-pink px-3 py-1 text-[8px] uppercase">Update</button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="pt-6 border-t border-pink-500/20 text-center">
+                                            <h3 className="pink-neon font-black text-xs uppercase mb-4 tracking-widest">Admin QR & Link</h3>
+                                            <div id="qrcode" className="bg-white p-3 inline-block rounded-xl mx-auto flex justify-center"></div>
+                                            <button onClick={() => {document.getElementById('qrcode').innerHTML=''; new QRCode(document.getElementById('qrcode'), {text: window.location.href + "?access=admin", width: 140, height: 140});}} className="btn-pink px-6 py-2 block mt-4 text-xs mx-auto uppercase">QR ኮድ አመንጭ</button>
+                                            <div className="mt-4 p-3 bg-black rounded text-[8px] break-all select-all opacity-50 border border-white/5">{window.location.href + "?access=admin"}</div>
+                                        </div>
+                                    </div>
+                                )}
+                                <button onClick={() => setView('landing')} className="w-full py-4 text-xs font-black opacity-30 uppercase tracking-[4px]">Logout</button>
                             </div>
                         )}
                     </main>
+
+                    <footer className="p-6 text-center border-t border-pink-900/20 mt-auto">
+                        <p className="text-[9px] font-black tracking-[5px] opacity-30 uppercase">Developed by <span className="pink-neon italic tracking-normal">Alex Getachew</span> | 2026</p>
+                    </footer>
                 </div>
             );
         };
